@@ -29,21 +29,20 @@ hermes plugins list | grep citta      # verify
 
 ## How it works
 
-The Brain's attention endpoint is asynchronous, so the plugin never blocks on
-it. Each turn, `transform_context`:
+Each turn, `transform_context` asks the Brain to attend to the current context
+and **waits for it to finish**, then injects the result:
 
 ```
-1. GET  /api/0.1.0/attention   → inject the Brain's current attention
-                                  ([Working context]) before the last user turn
-2. POST /api/0.1.0/attend      → post this context for the Brain to attend to
-                                  (returns at once; the Brain works in the background)
+1. POST /api/0.1.0/attend      → ask the Brain to attend to this context
+2. GET  /api/0.1.0/attention   → poll until it is done (the Brain takes its time)
+3. inject [Working context]    → before the last user turn, then the agent answers
 ```
 
-The Brain's attention arrives a turn later, so reaching it is fast — a status
-read plus a fire-and-forget post. The gate is **availability**, not a wait: if
-the read fails, the turn is cancelled; if it succeeds, the agent acts on
-whatever guidance is ready (none, on the very first turn). If the Brain decides
-not to respond, the turn is cancelled too.
+The Brain's attention is deep, so a turn takes as long as the Brain needs. That
+is the point: the Brain does cognitive work that would otherwise cost the agent
+many LLM roundtrips. If the Brain is unreachable, or does not finish within
+`attend_deadline`, or decides not to respond, the turn is cancelled — no action
+without a Brain.
 
 `require_brain: false` in the config downgrades to fail-open (act even when the
 Brain is down) — but that defeats the purpose and is off by default.
@@ -56,9 +55,10 @@ plugins:
     - citta
   citta:
     url: https://brains.alchemist.ninja
-    token: bt_xxx          # per-brain token; or inherited from mcp_servers.brain
-    read_timeout: 5        # GET /attention — the fast read
-    fire_timeout: 10       # POST /attend — returns at once
+    token: bt_xxx           # per-brain token; or inherited from mcp_servers.brain
+    attend_deadline: 180    # seconds — max wait for the Brain to attend
+    poll_interval: 2        # seconds — how often to check while it thinks
+    http_timeout: 10        # seconds — per request
 ```
 
 ## Requirements
