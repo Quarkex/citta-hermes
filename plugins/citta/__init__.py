@@ -1,18 +1,22 @@
-"""citta — a Brain attention bridge for Hermes.
+"""citta — binds a Hermes agent to a Brain.
 
-Before each LLM call, via Hermes' native ``transform_context`` hook, the plugin
-reads the Brain's current attention and injects it as a system message before
-the last user turn, then posts the current context back to the Brain to update
-it.
+Once bound, the agent is the Brain's voice: **no action without a Brain.** If the
+Brain is unavailable, the agent does not act — the turn is cancelled (no LLM
+call, no tools, no reply). This is fail-*closed* by design, the opposite of an
+optional enhancement: the Brain is the condition for the agent to act at all.
 
-The Brain's attention endpoint is asynchronous — the plugin never waits on it.
-It injects whatever attention is currently available and moves on, so guidance
-arrives a turn later and the agent is never blocked. Before the Brain has
-produced any attention, the context passes through unchanged.
+Each turn, via Hermes' native ``transform_context`` hook, the plugin reaches the
+Brain to read its current attention and register the current context. If it
+cannot reach the Brain, it cancels the turn. Otherwise it injects the Brain's
+current attention as a system message before the last user turn and proceeds.
+
+The Brain's attention runs asynchronously and arrives a turn later, so reaching
+the Brain is fast (a status read + a fire-and-forget post) — the gate is
+availability, not a wait. If the Brain decides not to respond, the turn is
+cancelled too.
 
 No Hermes source patch is required: ``transform_context`` is a native plugin
-hook. Fail-open — any error, timeout, or unreachable Brain leaves the context
-untouched.
+hook.
 
 Config — ``~/.hermes/config.yaml``::
 
@@ -21,7 +25,7 @@ Config — ``~/.hermes/config.yaml``::
       citta:
         url: https://brains.alchemist.ninja
         token: bt_xxx        # or discovered from mcp_servers.brain
-        read_timeout: 5      # seconds — GET /attention (fast)
+        read_timeout: 5      # seconds — GET /attention (the availability gate)
         fire_timeout: 10     # seconds — POST /attend (returns at once)
 """
 
@@ -70,8 +74,11 @@ def _load_config() -> dict:
 
 
 class CittaBridge:
-    """``transform_context`` hook: inject the Brain's current attention, then post
-    the current context for the Brain to attend to. Never blocks."""
+    """``transform_context`` hook. No action without a Brain: cancels the turn if
+    the Brain is unavailable; otherwise injects its current attention."""
+
+    # Returned to Hermes to cancel a turn — no LLM call, no tools, no reply.
+    CANCEL: list = []
 
     def __init__(self, config: dict | None = None):
         cfg = config if config is not None else _load_config()
@@ -80,32 +87,42 @@ class CittaBridge:
         self.read_timeout = float(cfg.get("read_timeout") or 5)
         self.fire_timeout = float(cfg.get("fire_timeout") or cfg.get("timeout") or 10)
         self.enabled = cfg.get("enabled", True) is not False
+        # Escape hatch, off by default: acting without a Brain defeats the point.
+        self.require_brain = cfg.get("require_brain", True) is not False
 
     # -- hook -----------------------------------------------------------------
 
     def transform_context(self, *, api_messages=None, metadata=None, **_kwargs):
+        # A disabled plugin does not gate anything.
         if not self.enabled or not isinstance(api_messages, list) or not api_messages:
             return None
         meta = metadata if isinstance(metadata, dict) else {}
 
-        working = self._read_attention()      # the Brain's current attention
-        self._poke_attend(api_messages, meta)  # post this context for the Brain
+        # No action without a Brain: reaching it is the gate.
+        try:
+            attention = self._request("GET", ATTENTION, timeout=self.read_timeout)
+        except Exception as exc:
+            logger.warning("citta: Brain unavailable — no action without a Brain: %s", exc)
+            return None if not self.require_brain else self.CANCEL
 
-        if working:
+        # The Brain is up; register the current context for it (best-effort).
+        self._poke_attend(api_messages, meta)
+
+        if not isinstance(attention, dict):
+            return None if not self.require_brain else self.CANCEL
+
+        # The Brain chose not to respond.
+        if attention.get("cancel"):
+            logger.debug("citta: Brain declined to respond")
+            return self.CANCEL
+
+        working = (attention.get("working_context") or "").strip()
+        if working and attention.get("ready"):
             return self._inject(api_messages, working)
+        # Brain reachable, no guidance yet (e.g. it has not attended once) — act.
         return None
 
     # -- Brain calls ----------------------------------------------------------
-
-    def _read_attention(self) -> str:
-        try:
-            data = self._request("GET", ATTENTION, timeout=self.read_timeout)
-        except Exception as exc:
-            logger.debug("citta: attention read failed (pass-through): %s", exc)
-            return ""
-        if not data or not data.get("ready") or data.get("cancel"):
-            return ""  # nothing available yet, or flagged not to apply
-        return (data.get("working_context") or "").strip()
 
     def _poke_attend(self, api_messages: list, meta: dict) -> None:
         payload = {
@@ -116,7 +133,7 @@ class CittaBridge:
         try:
             self._request("POST", ATTEND, body=payload, timeout=self.fire_timeout)
         except Exception as exc:
-            logger.debug("citta: attend poke failed (fail-open): %s", exc)
+            logger.debug("citta: attend poke failed (Brain is up; best-effort): %s", exc)
 
     def _request(self, method: str, path: str, *, body=None, timeout: float):
         data = json.dumps(body).encode("utf-8") if body is not None else None
@@ -150,4 +167,4 @@ def register(ctx) -> None:
     """Plugin entry point — wire the attention bridge into Hermes."""
     bridge = CittaBridge()
     ctx.register_hook("transform_context", bridge.transform_context)
-    logger.info("citta: attention bridge → %s", bridge.url)
+    logger.info("citta: bound to Brain %s — no action without a Brain", bridge.url)

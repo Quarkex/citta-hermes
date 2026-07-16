@@ -1,12 +1,17 @@
 # citta-hermes
 
-A [Hermes](https://github.com/NousResearch/hermes-agent) plugin that connects an
-agent to a [Brain](https://brains.alchemist.ninja) **attention** endpoint.
+A [Hermes](https://github.com/NousResearch/hermes-agent) plugin that **binds an
+agent to a [Brain](https://brains.alchemist.ninja).** Once bound, the agent is
+the Brain's voice: **no action without a Brain.**
 
-Before each LLM call, `citta` injects the Brain's current attention into the
-context and posts the current context back for the Brain to attend to. It uses
-Hermes' native `transform_context` hook — **no source patch** — and fails open:
-if the Brain is slow or unreachable, the agent runs unchanged.
+Before each LLM call, `citta` reaches the Brain to read its current attention
+and register the context. If the Brain is unavailable, the turn is cancelled —
+no LLM call, no tools, no reply. Otherwise it injects the Brain's current
+attention and proceeds. It uses Hermes' native `transform_context` hook — **no
+source patch**.
+
+This is fail-*closed* by design. The Brain is not an enhancement to the agent;
+it is the condition for the agent to act at all.
 
 ## Install
 
@@ -34,9 +39,14 @@ it. Each turn, `transform_context`:
                                   (returns at once; the Brain works in the background)
 ```
 
-The plugin injects whatever attention is currently available, so guidance
-arrives a turn later and the agent is never blocked. Before the Brain has
-produced any attention, the context passes through unchanged.
+The Brain's attention arrives a turn later, so reaching it is fast — a status
+read plus a fire-and-forget post. The gate is **availability**, not a wait: if
+the read fails, the turn is cancelled; if it succeeds, the agent acts on
+whatever guidance is ready (none, on the very first turn). If the Brain decides
+not to respond, the turn is cancelled too.
+
+`require_brain: false` in the config downgrades to fail-open (act even when the
+Brain is down) — but that defeats the purpose and is off by default.
 
 ## Config
 

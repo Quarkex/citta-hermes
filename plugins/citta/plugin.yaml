@@ -1,8 +1,8 @@
 name: citta
 version: 1.0.0
 description: >
-  Attention bridge — injects the Brain's current attention before each LLM call
-  and posts the context back for the Brain to attend to, via the native
-  transform_context hook. Asynchronous, never blocks. Fail-open.
+  Binds a Hermes agent to a Brain via the native transform_context hook: injects
+  the Brain's current attention each turn and, if the Brain is unavailable,
+  cancels the turn. No action without a Brain (fail-closed).
 author: Quarkex
 kind: standalone
