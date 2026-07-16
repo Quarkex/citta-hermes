@@ -11,7 +11,7 @@
 #        - present  → no source patch (the normal case)
 #        - absent   → applies the minimal shim (patches/apply_shim.py)
 #   4. writes plugins.citta (url/token) + enables it in config.yaml
-#   5. disables the superseded Brain MemoryProvider (attend already recalls)
+#   5. disables the superseded Brain memory prefetch provider, if present
 #
 # No secrets are baked into the plugin — the token lives only in your config.yaml.
 
@@ -93,14 +93,6 @@ CFG_ARGS=(--home "$HERMES_HOME")
 [[ -n "$TOKEN" ]] && CFG_ARGS+=(--token "$TOKEN")
 [[ "$KEEP_MEMORY_PROVIDER" == "0" ]] && CFG_ARGS+=(--disable-old)
 python3 "$DEST/configure.py" "${CFG_ARGS[@]}"
-
-# --- 4. note the deprecated interoception patch, if present ---
-if [[ -f "$AGENT_DIR/gateway/run.py" ]] \
-   && grep -q '# --- Interoception:' "$AGENT_DIR/gateway/run.py" 2>/dev/null; then
-  warn "the old gateway interoception patch is still applied — it is superseded by"
-  warn "Manasikara's vigilance/interoception stages. Remove it to avoid double whispers:"
-  warn "  cd $AGENT_DIR && git checkout gateway/run.py   # if the patch is your only local change"
-fi
 
 echo
 ok "citta installed. Restart Hermes to load it."

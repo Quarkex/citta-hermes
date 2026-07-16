@@ -1,9 +1,8 @@
 name: citta
 version: 1.0.0
 description: >
-  Attention bridge — routes the agent's full context through Brain's Manasikara
-  pipeline (attend) before each LLM call via the native transform_context hook.
-  Manasikara handles recall, empathy, interoception, vigilance and whisper
-  injection server-side. Fail-open.
+  Attention bridge — injects the Brain's current attention before each LLM call
+  and posts the context back for the Brain to attend to, via the native
+  transform_context hook. Asynchronous, never blocks. Fail-open.
 author: Quarkex
 kind: standalone

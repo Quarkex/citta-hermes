@@ -3,8 +3,8 @@
 
 Ensures ``plugins.citta`` is set (url/token), enables the plugin in
 ``plugins.enabled``, and — under ``--disable-old`` — turns off the superseded
-Brain ``MemoryProvider`` (``memory.provider: brain``), since Manasikara's
-``attend`` already recalls. Always backs up config.yaml first.
+Brain memory prefetch provider (``memory.provider: brain``), which the
+attention bridge supersedes. Always backs up config.yaml first.
 
 Usage:
     configure.py [--home DIR] [--url URL] [--token TOKEN] [--disable-old]

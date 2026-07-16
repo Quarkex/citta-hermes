@@ -1,26 +1,18 @@
-"""Citta — the Hermes ⇆ Brain attention bridge.
+"""citta — a Brain attention bridge for Hermes.
 
-Runs Brain's **Manasikara** attention pipeline alongside the agent, **one turn
-behind**, via Hermes' native ``transform_context`` hook. The full pipeline
-(recall, empathy, interoception, vigilance, whisper distillation) takes ~30–90s
-— far too long to block an LLM call — so it runs asynchronously:
+Before each LLM call, via Hermes' native ``transform_context`` hook, the plugin
+reads the Brain's current attention and injects it as a system message before
+the last user turn, then posts the current context back to the Brain to update
+it.
 
-* every turn, the plugin reads the **previous** turn's completed attention
-  (``GET /attend_latest``, a fast in-memory read) and injects it as a
-  ``[Working context]`` system message before the last user turn;
-* it then fires a fresh ``attend`` for the **current** context
-  (``POST /attend`` → 202, returns immediately) whose result lands in the cache
-  for the next turn.
+The Brain's attention endpoint is asynchronous — the plugin never waits on it.
+It injects whatever attention is currently available and moves on, so guidance
+arrives a turn later and the agent is never blocked. Before the Brain has
+produced any attention, the context passes through unchanged.
 
-The mind therefore thinks *concurrently* with the agent and its guidance arrives
-a turn later — never blocking the response. On the very first turn (empty cache)
-the context passes through unchanged.
-
-This single hook supersedes the old ``memory/brain`` MemoryProvider prefetch and
-the ``gateway/run.py`` interoception patch — Manasikara subsumes both, and does
-it server-side. There is **no source patch** on modern Hermes.
-
-Fail-open: any error, timeout, or unreachable Brain leaves the context untouched.
+No Hermes source patch is required: ``transform_context`` is a native plugin
+hook. Fail-open — any error, timeout, or unreachable Brain leaves the context
+untouched.
 
 Config — ``~/.hermes/config.yaml``::
 
@@ -29,8 +21,8 @@ Config — ``~/.hermes/config.yaml``::
       citta:
         url: https://brains.alchemist.ninja
         token: bt_xxx        # or discovered from mcp_servers.brain
-        read_timeout: 5      # seconds — the fast latest-attention read
-        fire_timeout: 10     # seconds — POST /attend (202 returns immediately)
+        read_timeout: 5      # seconds — GET /attention (fast)
+        fire_timeout: 10     # seconds — POST /attend (returns at once)
 """
 
 from __future__ import annotations
@@ -43,14 +35,14 @@ import urllib.request
 logger = logging.getLogger(__name__)
 
 ATTEND = "/api/0.1.0/attend"
-LATEST = "/api/0.1.0/attend_latest/"
+ATTENTION = "/api/0.1.0/attention"
 DEFAULT_URL = "https://brains.alchemist.ninja"
 
-# metadata Manasikara uses for routing (identify/address stages) + pressure
+# Routing hints the Brain uses — who is speaking and where. Not session keys;
+# the Brain holds a single current attention.
 _FORWARD_META = (
-    "session_id", "sender_id", "sender_name", "platform", "chat_type",
-    "chat_id", "chat_name", "thread_id", "user_turn_count", "iteration",
-    "context_window_tokens", "approx_input_tokens",
+    "sender_id", "sender_name", "platform", "chat_type",
+    "chat_id", "chat_name", "user_turn_count",
 )
 
 
@@ -78,8 +70,8 @@ def _load_config() -> dict:
 
 
 class CittaBridge:
-    """``transform_context`` hook: inject the previous turn's attention, fire the
-    current turn's. The mind runs one turn behind, never blocking."""
+    """``transform_context`` hook: inject the Brain's current attention, then post
+    the current context for the Brain to attend to. Never blocks."""
 
     def __init__(self, config: dict | None = None):
         cfg = config if config is not None else _load_config()
@@ -95,10 +87,9 @@ class CittaBridge:
         if not self.enabled or not isinstance(api_messages, list) or not api_messages:
             return None
         meta = metadata if isinstance(metadata, dict) else {}
-        session = meta.get("session_id") or "default"
 
-        working = self._read_latest(session)      # previous turn's attention
-        self._fire_attend(api_messages, meta, session)  # this turn's, async
+        working = self._read_attention()      # the Brain's current attention
+        self._poke_attend(api_messages, meta)  # post this context for the Brain
 
         if working:
             return self._inject(api_messages, working)
@@ -106,27 +97,26 @@ class CittaBridge:
 
     # -- Brain calls ----------------------------------------------------------
 
-    def _read_latest(self, session: str) -> str:
+    def _read_attention(self) -> str:
         try:
-            data = self._request("GET", LATEST + urllib.request.quote(session, safe=""),
-                                  timeout=self.read_timeout)
+            data = self._request("GET", ATTENTION, timeout=self.read_timeout)
         except Exception as exc:
-            logger.debug("citta: attend_latest read failed (pass-through): %s", exc)
+            logger.debug("citta: attention read failed (pass-through): %s", exc)
             return ""
         if not data or not data.get("ready") or data.get("cancel"):
-            return ""  # not ready yet, or a stale inhibit we must not apply now
+            return ""  # nothing available yet, or flagged not to apply
         return (data.get("working_context") or "").strip()
 
-    def _fire_attend(self, api_messages: list, meta: dict, session: str) -> None:
+    def _poke_attend(self, api_messages: list, meta: dict) -> None:
         payload = {
             "api_version": "0.1.0",
             "context_stream": api_messages,
-            "metadata": {k: meta[k] for k in _FORWARD_META if k in meta} or {"session_id": session},
+            "metadata": {k: meta[k] for k in _FORWARD_META if k in meta},
         }
         try:
             self._request("POST", ATTEND, body=payload, timeout=self.fire_timeout)
         except Exception as exc:
-            logger.debug("citta: attend fire failed (fail-open): %s", exc)
+            logger.debug("citta: attend poke failed (fail-open): %s", exc)
 
     def _request(self, method: str, path: str, *, body=None, timeout: float):
         data = json.dumps(body).encode("utf-8") if body is not None else None
@@ -145,7 +135,7 @@ class CittaBridge:
     def _inject(api_messages: list, working: str) -> list:
         content = working if working.startswith("[") else "[Working context]\n" + working
         note = {"role": "system", "content": content}
-        # place it right before the last user turn (Manasikara's own convention)
+        # place it right before the last user turn
         last_user = next(
             (i for i in range(len(api_messages) - 1, -1, -1)
              if isinstance(api_messages[i], dict) and api_messages[i].get("role") == "user"),
@@ -160,4 +150,4 @@ def register(ctx) -> None:
     """Plugin entry point — wire the attention bridge into Hermes."""
     bridge = CittaBridge()
     ctx.register_hook("transform_context", bridge.transform_context)
-    logger.info("citta: attention bridge → %s (one turn behind)", bridge.url)
+    logger.info("citta: attention bridge → %s", bridge.url)

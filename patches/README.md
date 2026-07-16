@@ -8,8 +8,8 @@ changes** — it is a pure plugin.
 the whole "patch mode," and by design it is minimal: it adds `transform_context`
 to `VALID_HOOKS` and (if missing) points you at the ~12-line invocation block to
 place before the LLM call. It never rewrites large spans of `run.py` the way the
-old interoception patch did — that patch is **deprecated**: Manasikara's
-vigilance and interoception stages replace every sensor it carried.
+old gateway context patch did — that patch is **deprecated**: the Brain's
+attention endpoint does that work server-side now.
 
 ## Is the hook present?
 
