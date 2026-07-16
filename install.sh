@@ -44,6 +44,12 @@ die()  { printf '\033[1;31m✗\033[0m %s\n' "$*" >&2; exit 1; }
 [[ -d "$HERMES_HOME" ]] || die "Hermes home not found: $HERMES_HOME (set --home or \$HERMES_HOME)"
 AGENT_DIR="$HERMES_HOME/hermes-agent"
 
+# Prefer Hermes' own venv python (it has PyYAML); fall back to system python3.
+PY="python3"
+for cand in "$AGENT_DIR/venv/bin/python3" "$AGENT_DIR/venv/bin/python"; do
+  [[ -x "$cand" ]] && PY="$cand" && break
+done
+
 # --- locate the repo source (local checkout, or clone for the piped one-liner) ---
 SRC=""
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
@@ -79,7 +85,7 @@ fi
 
 if [[ "$PATCH_NEEDED" == "1" ]]; then
   say "applying minimal shim (adds only the transform_context hook)…"
-  if python3 "$SRC/patches/apply_shim.py" --agent "$AGENT_DIR"; then
+  if "$PY" "$SRC/patches/apply_shim.py" --agent "$AGENT_DIR"; then
     ok "shim applied"
   else
     warn "shim could not be applied automatically — see $SRC/patches/README.md"
@@ -92,7 +98,7 @@ CFG_ARGS=(--home "$HERMES_HOME")
 [[ -n "$URL" ]]   && CFG_ARGS+=(--url "$URL")
 [[ -n "$TOKEN" ]] && CFG_ARGS+=(--token "$TOKEN")
 [[ "$KEEP_MEMORY_PROVIDER" == "0" ]] && CFG_ARGS+=(--disable-old)
-python3 "$DEST/configure.py" "${CFG_ARGS[@]}"
+"$PY" "$DEST/configure.py" "${CFG_ARGS[@]}"
 
 echo
 ok "citta installed. Restart Hermes to load it."
